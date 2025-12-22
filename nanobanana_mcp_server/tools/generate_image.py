@@ -207,8 +207,32 @@ def register_generate_image_tool(server: FastMCP):
                         "Edit mode with file_id supports only additional input images, not multiple primary inputs"
                     )
 
-            # Get enhanced image service (would be injected in real implementation)
-            enhanced_image_service = _get_enhanced_image_service()
+            # Get the correct Gemini client based on model selection
+            from ..services import (
+                get_flash_gemini_client,
+                get_pro_gemini_client,
+                get_files_api_service,
+                get_image_database_service,
+            )
+            from ..services.enhanced_image_service import EnhancedImageService
+            from ..config.settings import FlashImageConfig, ProImageConfig
+
+            # Select appropriate client and config based on tier
+            if selected_tier == ModelTier.PRO:
+                gemini_client = get_pro_gemini_client()
+                config = ProImageConfig()
+            else:
+                gemini_client = get_flash_gemini_client()
+                config = FlashImageConfig()
+
+            # Create enhanced image service with selected client
+            enhanced_image_service = EnhancedImageService(
+                gemini_client=gemini_client,
+                files_api_service=get_files_api_service(),
+                db_service=get_image_database_service(),
+                config=config,
+                out_dir=os.environ.get("IMAGE_OUTPUT_DIR", "output"),
+            )
 
             # Execute based on detected mode
             if detected_mode == "edit" and file_id:
@@ -267,6 +291,7 @@ def register_generate_image_tool(server: FastMCP):
                     system_instruction=system_instruction,
                     input_images=input_images,
                     aspect_ratio=aspect_ratio,
+                    resolution=resolution,
                 )
 
             # Create response with file paths and thumbnails

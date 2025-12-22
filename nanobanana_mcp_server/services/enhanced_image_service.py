@@ -71,6 +71,7 @@ class EnhancedImageService:
         system_instruction: Optional[str] = None,
         input_images: Optional[List[Tuple[str, str]]] = None,
         aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
     ) -> Tuple[List[MCPImage], List[Dict[str, Any]]]:
         """
         Generate images following the complete workflow from workflows.md.
@@ -128,7 +129,7 @@ class EnhancedImageService:
 
                     # Step 1-2: M->>G: generateContent -> G-->>M: inline image bytes
                     response = self.gemini_client.generate_content(
-                        contents, aspect_ratio=aspect_ratio
+                        contents, aspect_ratio=aspect_ratio, resolution=resolution
                     )
                     images = self.gemini_client.extract_images(response)
 

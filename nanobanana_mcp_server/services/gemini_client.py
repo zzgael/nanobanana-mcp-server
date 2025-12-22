@@ -96,6 +96,7 @@ class GeminiClient:
         contents: list,
         config: dict[str, Any] | None = None,
         aspect_ratio: str | None = None,
+        resolution: str | None = None,
         **kwargs
     ) -> any:
         """
@@ -131,9 +132,24 @@ class GeminiClient:
                     "response_modalities": ["Image"],  # Force image-only responses
                 }
 
-                # Add aspect ratio if provided
-                if aspect_ratio:
-                    config_kwargs["image_config"] = gx.ImageConfig(aspect_ratio=aspect_ratio)
+                # Add image config if aspect ratio or resolution provided
+                if aspect_ratio or resolution:
+                    image_config_kwargs = {}
+                    if aspect_ratio:
+                        image_config_kwargs["aspect_ratio"] = aspect_ratio
+                    if resolution:
+                        # Map resolution parameter to Gemini API image_size format
+                        # Must use uppercase K as per Gemini API docs
+                        resolution_map = {
+                            "4k": "4K",
+                            "2k": "2K",
+                            "1k": "1K",
+                            "high": "2K",  # High resolution = 2K
+                        }
+                        image_size = resolution_map.get(resolution.lower(), "1K")
+                        image_config_kwargs["image_size"] = image_size
+                        self.logger.debug(f"Mapped resolution '{resolution}' to image_size '{image_size}'")
+                    config_kwargs["image_config"] = gx.ImageConfig(**image_config_kwargs)
 
                 # Merge filtered config parameters
                 config_kwargs.update(filtered_config)

@@ -170,3 +170,17 @@ def get_model_selector() -> ModelSelector:
     if _model_selector is None:
         raise RuntimeError("Services not initialized. Call initialize_services() first.")
     return _model_selector
+
+
+def get_flash_gemini_client() -> GeminiClient:
+    """Get the Flash Gemini client instance."""
+    if _flash_gemini_client is None:
+        raise RuntimeError("Services not initialized. Call initialize_services() first.")
+    return _flash_gemini_client
+
+
+def get_pro_gemini_client() -> GeminiClient:
+    """Get the Pro Gemini client instance."""
+    if _pro_gemini_client is None:
+        raise RuntimeError("Services not initialized. Call initialize_services() first.")
+    return _pro_gemini_client

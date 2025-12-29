@@ -1,6 +1,7 @@
 import base64
 import logging
 from typing import Any
+import httpx
 
 from google import genai
 from google.genai import types as gx
@@ -230,6 +231,153 @@ class GeminiClient:
                 )
 
         return filtered
+
+    def generate_content_via_rest(
+        self,
+        contents: str | list,
+        aspect_ratio: str | None = None,
+        image_size: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Generate content via REST API to bypass SDK limitations.
+
+        This method directly calls the Gemini REST API to access parameters
+        not yet exposed in the Python SDK, such as imageConfig.imageSize for 4K generation.
+
+        Args:
+            contents: Text prompt or content list
+            aspect_ratio: Image aspect ratio (e.g., "16:9", "1:1")
+            image_size: Image size ("1K", "2K", "4K")
+            config: Additional generation config parameters
+
+        Returns:
+            Raw API response dict
+        """
+        # Build request body
+        generation_config = {}
+
+        # Add image config if params provided
+        if aspect_ratio or image_size:
+            image_config = {}
+            if aspect_ratio:
+                image_config["aspectRatio"] = aspect_ratio
+            if image_size:
+                image_config["imageSize"] = image_size
+            generation_config["imageConfig"] = image_config
+            generation_config["responseModalities"] = ["TEXT", "IMAGE"]
+
+        # Merge additional config
+        if config:
+            generation_config.update(config)
+
+        # Format contents
+        if isinstance(contents, str):
+            # Simple string prompt
+            formatted_contents = [{
+                "role": "user",
+                "parts": [{"text": contents}]
+            }]
+        elif isinstance(contents, list):
+            # List of strings or Parts - convert to proper format
+            parts = []
+            for item in contents:
+                if isinstance(item, str):
+                    # Text string
+                    parts.append({"text": item})
+                elif hasattr(item, 'text') and item.text:
+                    # Part object with text
+                    parts.append({"text": item.text})
+                elif hasattr(item, 'inline_data') and item.inline_data:
+                    # Part object with image
+                    inline_data = item.inline_data
+                    parts.append({
+                        "inlineData": {
+                            "mimeType": inline_data.mime_type,
+                            "data": base64.b64encode(inline_data.data).decode('utf-8') if isinstance(inline_data.data, bytes) else inline_data.data
+                        }
+                    })
+
+            formatted_contents = [{
+                "role": "user",
+                "parts": parts
+            }]
+        else:
+            # Already formatted
+            formatted_contents = contents
+
+        request_body = {
+            "contents": formatted_contents,
+        }
+
+        if generation_config:
+            request_body["generationConfig"] = generation_config
+
+        # Make REST API call
+        api_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_config.model_name}:generateContent"
+
+        # Only works with API key auth (Vertex AI uses different REST endpoints)
+        if not self.config.gemini_api_key:
+            raise AuthenticationError("REST API requires API key authentication (not Vertex AI)")
+
+        headers = {
+            "x-goog-api-key": self.config.gemini_api_key,
+            "Content-Type": "application/json",
+        }
+
+        self.logger.debug(
+            f"Calling Gemini REST API: model={self.gemini_config.model_name}, "
+            f"imageSize={image_size}, aspectRatio={aspect_ratio}"
+        )
+
+        try:
+            # Use 5 minute timeout for 4K generation
+            with httpx.Client(timeout=300.0) as client:
+                response = client.post(
+                    api_endpoint,
+                    json=request_body,
+                    headers=headers,
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"REST API HTTP error: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
+            self.logger.error(f"REST API error: {e}")
+            raise
+
+    def extract_images_from_rest_response(self, response_data: dict) -> list[bytes]:
+        """
+        Extract image bytes from REST API response dict.
+
+        Args:
+            response_data: Raw REST API response dictionary
+
+        Returns:
+            List of image bytes
+        """
+        images = []
+        candidates = response_data.get("candidates", [])
+
+        if not candidates:
+            return images
+
+        for candidate in candidates:
+            content = candidate.get("content", {})
+            parts = content.get("parts", [])
+
+            for part in parts:
+                inline_data = part.get("inlineData")
+                if inline_data and "data" in inline_data:
+                    try:
+                        # REST API returns base64-encoded image data
+                        image_bytes = base64.b64decode(inline_data["data"])
+                        images.append(image_bytes)
+                    except Exception as e:
+                        self.logger.error(f"Failed to decode image from REST response: {e}")
+
+        return images
 
     def extract_images(self, response) -> list[bytes]:
         """Extract image bytes from Gemini response."""

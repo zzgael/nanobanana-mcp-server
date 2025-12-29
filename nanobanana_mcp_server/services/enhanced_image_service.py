@@ -127,11 +127,31 @@ class EnhancedImageService:
                 try:
                     self.logger.debug(f"Generating image {i + 1}/{n}...")
 
+                    # Map resolution to image_size for REST API
+                    resolution_map = {
+                        "4k": "4K",
+                        "2k": "2K",
+                        "1k": "1K",
+                        "high": "2K",
+                    }
+                    image_size = resolution_map.get(resolution.lower(), "1K") if resolution else None
+
                     # Step 1-2: M->>G: generateContent -> G-->>M: inline image bytes
-                    response = self.gemini_client.generate_content(
-                        contents, aspect_ratio=aspect_ratio, resolution=resolution
-                    )
-                    images = self.gemini_client.extract_images(response)
+                    # Use REST API for 4K/2K to bypass SDK imageSize limitation
+                    if image_size in ["4K", "2K"]:
+                        self.logger.debug(f"Using REST API for {image_size} generation")
+                        response_data = self.gemini_client.generate_content_via_rest(
+                            contents=contents,
+                            aspect_ratio=aspect_ratio,
+                            image_size=image_size,
+                        )
+                        images = self.gemini_client.extract_images_from_rest_response(response_data)
+                    else:
+                        # Fall back to SDK for lower resolutions
+                        response = self.gemini_client.generate_content(
+                            contents, aspect_ratio=aspect_ratio, resolution=resolution
+                        )
+                        images = self.gemini_client.extract_images(response)
 
                     for j, image_bytes in enumerate(images):
                         # Process each generated image through the full workflow
@@ -323,7 +343,9 @@ class EnhancedImageService:
         filename = f"gen_{timestamp}_{response_index}_{image_index}_{image_hash}"
 
         full_path = os.path.join(self.out_dir, f"{filename}.{self.config.default_image_format}")
-        
+        # Convert to absolute path for cross-process compatibility
+        full_path = os.path.abspath(full_path)
+
         # Ensure output directory exists
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         
@@ -420,6 +442,8 @@ class EnhancedImageService:
         filename = f"edit_{timestamp}_{edit_index}_{image_hash}"
 
         full_path = os.path.join(self.out_dir, f"{filename}.{self.config.default_image_format}")
+        # Convert to absolute path for cross-process compatibility
+        full_path = os.path.abspath(full_path)
         with open(full_path, "wb") as f:
             f.write(image_bytes)
 

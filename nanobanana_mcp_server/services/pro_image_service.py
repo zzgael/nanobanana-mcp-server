@@ -32,6 +32,7 @@ class ProImageService:
         prompt: str,
         n: int = 1,
         resolution: str = "high",
+        aspect_ratio: str | None = None,
         thinking_level: ThinkingLevel | None = None,
         enable_grounding: bool | None = None,
         media_resolution: MediaResolution | None = None,
@@ -53,6 +54,7 @@ class ProImageService:
             prompt: Main generation prompt
             n: Number of images to generate
             resolution: Output resolution ('high', '4k', '2k', '1k')
+            aspect_ratio: Image aspect ratio (e.g., "1:1", "16:9", "9:16")
             thinking_level: Reasoning depth (LOW or HIGH)
             enable_grounding: Enable Google Search grounding
             media_resolution: Vision processing detail level
@@ -141,11 +143,38 @@ class ProImageService:
                     # The API may not expose enable_grounding as a direct parameter
                     # depending on SDK version
 
-                    response = self.gemini_client.generate_content(
-                        contents,
-                        config=gen_config
-                    )
-                    images = self.gemini_client.extract_images(response)
+                    # Map resolution to image_size for REST API
+                    resolution_map = {
+                        "4k": "4K",
+                        "2k": "2K",
+                        "1k": "1K",
+                        "high": "2K",
+                    }
+                    image_size = resolution_map.get(resolution.lower(), "1K") if resolution else None
+
+                    # Use REST API for 4K/2K to bypass SDK imageSize limitation
+                    if image_size in ["4K", "2K"]:
+                        self.logger.debug(f"Using REST API for {image_size} generation")
+                        # REST API doesn't support Pro-specific parameters
+                        # Filter out thinking_level, media_resolution, etc.
+                        rest_config = {k: v for k, v in gen_config.items()
+                                      if k not in ['thinking_level', 'media_resolution']}
+                        response_data = self.gemini_client.generate_content_via_rest(
+                            contents=contents if isinstance(contents, str) else contents,
+                            aspect_ratio=aspect_ratio,
+                            image_size=image_size,
+                            config=rest_config,
+                        )
+                        images = self.gemini_client.extract_images_from_rest_response(response_data)
+                    else:
+                        # Fall back to SDK for lower resolutions
+                        response = self.gemini_client.generate_content(
+                            contents,
+                            config=gen_config,
+                            aspect_ratio=aspect_ratio,
+                            resolution=resolution
+                        )
+                        images = self.gemini_client.extract_images(response)
 
                     for j, image_bytes in enumerate(images):
                         # Pro metadata
@@ -216,7 +245,15 @@ class ProImageService:
                             )
 
                 except Exception as e:
-                    self.logger.error(f"Failed to generate Pro image {i + 1}: {e}")
+                    import traceback
+                    import sys
+                    error_msg = f"[NANOBANANA ERROR] Failed to generate Pro image {i + 1}: {e}"
+                    full_trace = traceback.format_exc()
+                    self.logger.error(error_msg)
+                    self.logger.error(f"Traceback: {full_trace}")
+                    # Also print to stderr for MCP debugging
+                    print(error_msg, file=sys.stderr, flush=True)
+                    print(f"Full traceback:\n{full_trace}", file=sys.stderr, flush=True)
                     # Continue with other images rather than failing completely
                     continue
 
@@ -302,7 +339,9 @@ class ProImageService:
 
                 response = self.gemini_client.generate_content(
                     contents,
-                    config=gen_config
+                    config=gen_config,
+                    aspect_ratio=aspect_ratio,
+                    resolution=resolution
                 )
                 image_bytes_list = self.gemini_client.extract_images(response)
 

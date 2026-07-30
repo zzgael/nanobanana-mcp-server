@@ -9,7 +9,7 @@ from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 from pydantic import Field
 
-from ..config.constants import MAX_INPUT_IMAGES
+from ..config.constants import MAX_INPUT_IMAGES, MAX_INPUT_IMAGES_BY_TIER
 from ..config.settings import ModelTier, ThinkingLevel
 from ..core.exceptions import ValidationError
 from ..utils.validation_utils import validate_output_path
@@ -46,17 +46,27 @@ def register_generate_image_tool(server: FastMCP):
         system_instruction: Annotated[
             str | None, Field(description="Optional system tone/style guidance.", max_length=512)
         ] = None,
+        input_image_paths: Annotated[
+            list[str] | None,
+            Field(
+                description="Input images, in order. The FIRST one is the image being edited "
+                "(its scene, subjects and faces are preserved); the following ones are "
+                "references whose subjects, characters or styles get brought into it. "
+                "Up to 14 with the 'nb2' and 'pro' tiers, 3 with 'flash'. "
+                "Pass a single path to plainly edit one image, none to generate from scratch."
+            ),
+        ] = None,
         input_image_path_1: Annotated[
             str | None,
-            Field(description="Path to first input image for composition/conditioning"),
+            Field(description="Legacy single-slot form of input_image_paths[0]."),
         ] = None,
         input_image_path_2: Annotated[
             str | None,
-            Field(description="Path to second input image for composition/conditioning"),
+            Field(description="Legacy single-slot form of input_image_paths[1]."),
         ] = None,
         input_image_path_3: Annotated[
             str | None,
-            Field(description="Path to third input image for composition/conditioning"),
+            Field(description="Legacy single-slot form of input_image_paths[2]."),
         ] = None,
         file_id: Annotated[
             str | None,
@@ -137,9 +147,10 @@ def register_generate_image_tool(server: FastMCP):
 
         Supports multiple input modes:
         1. Pure generation: Just provide a prompt to create new images
-        2. Multi-image conditioning: Provide up to 3 input images using input_image_path_1/2/3 parameters
+        2. Editing / fusion: pass input_image_paths — the first image is the one being edited
+           (its scene and subjects are preserved), the rest are references to blend in.
+           Up to 14 images with the 'nb2' and 'pro' tiers, 3 with 'flash'.
         3. File ID editing: Edit previously uploaded images using Files API ID
-        4. File path editing: Edit local images by providing single input image path
 
         Automatically detects mode based on parameters or can be explicitly controlled.
         Input images are read from the local filesystem to avoid massive token usage.
@@ -148,15 +159,20 @@ def register_generate_image_tool(server: FastMCP):
         logger = logging.getLogger(__name__)
 
         try:
-            # Construct input_image_paths list from individual parameters
-            input_image_paths = []
-            for path in [input_image_path_1, input_image_path_2, input_image_path_3]:
-                if path:
-                    input_image_paths.append(path)
+            # Order matters (the first image is the one being edited), so the array form wins
+            # outright when present rather than being merged with the legacy slots — mixing
+            # both would leave the edit source ambiguous. Duplicates collapse.
+            raw_paths = list(input_image_paths or []) or [
+                input_image_path_1,
+                input_image_path_2,
+                input_image_path_3,
+            ]
+            deduped_paths: list[str] = []
+            for path in raw_paths:
+                if path and path not in deduped_paths:
+                    deduped_paths.append(path)
 
-            # Convert empty list to None for consistency
-            if not input_image_paths:
-                input_image_paths = None
+            input_image_paths = deduped_paths or None
 
             logger.info(
                 f"Generate image request: prompt='{prompt[:50]}...', n={n}, "
@@ -167,13 +183,13 @@ def register_generate_image_tool(server: FastMCP):
             # Validate output_path if provided
             validate_output_path(output_path)
 
-            # Auto-detect mode based on inputs
+            # Auto-detect mode based on inputs. Any input image means the caller wants that
+            # image kept and modified — capping this at exactly one silently turned
+            # "put THESE people in a vineyard with THOSE characters" into a from-scratch
+            # generation that resembled nobody.
             detected_mode = mode
             if mode == "auto":
-                if file_id or (input_image_paths and len(input_image_paths) == 1):
-                    detected_mode = "edit"
-                else:
-                    detected_mode = "generate"
+                detected_mode = "edit" if (file_id or input_image_paths) else "generate"
 
             # Parse model tier
             try:
@@ -217,8 +233,18 @@ def register_generate_image_tool(server: FastMCP):
                 raise ValidationError("Mode must be 'auto', 'generate', or 'edit'")
 
             if input_image_paths:
-                if len(input_image_paths) > MAX_INPUT_IMAGES:
-                    raise ValidationError(f"Maximum {MAX_INPUT_IMAGES} input images allowed")
+                tier_cap = MAX_INPUT_IMAGES_BY_TIER.get(selected_tier.value, MAX_INPUT_IMAGES)
+                if len(input_image_paths) > tier_cap:
+                    raise ValidationError(
+                        f"{len(input_image_paths)} input images given but the "
+                        f"'{selected_tier.value}' tier accepts at most {tier_cap}. "
+                        + (
+                            "Use model_tier='nb2' or 'pro' to go up to "
+                            f"{MAX_INPUT_IMAGES}, or drop the least important references."
+                            if tier_cap < MAX_INPUT_IMAGES
+                            else "Drop the least important references."
+                        )
+                    )
 
                 # Validate that all files exist
                 for i, path in enumerate(input_image_paths):
@@ -231,10 +257,6 @@ def register_generate_image_tool(server: FastMCP):
             if detected_mode == "edit":
                 if not file_id and not input_image_paths:
                     raise ValidationError("Edit mode requires either file_id or input_image_paths")
-                if file_id and input_image_paths and len(input_image_paths) > 1:
-                    raise ValidationError(
-                        "Edit mode with file_id supports only additional input images, not multiple primary inputs"
-                    )
 
             # Get enhanced image service (workflows.md + Files API + DB)
             enhanced_image_service = _get_enhanced_image_service()
@@ -286,27 +308,22 @@ def register_generate_image_tool(server: FastMCP):
                             if isinstance(meta, dict):
                                 meta.setdefault("parent_file_id", file_id)
                     else:
-                        # Edit by file path (read bytes locally)
+                        # Edit by file path (read bytes locally). The first path is the image
+                        # being edited; anything after it rides along as a reference.
                         src_path = input_image_paths[0]
+                        reference_paths = input_image_paths[1:]
                         logger.info(
-                            f"Edit mode ({selected_tier.value.upper()}): using file path {src_path}, output_path={output_path}"
+                            f"Edit mode ({selected_tier.value.upper()}): using file path {src_path} "
+                            f"with {len(reference_paths)} reference image(s), output_path={output_path}"
                         )
-                        try:
-                            with open(src_path, "rb") as f:
-                                image_bytes = f.read()
-                            mime_type, _ = mimetypes.guess_type(src_path)
-                            if not mime_type or not mime_type.startswith("image/"):
-                                mime_type = "image/png"
-                            base64_data = base64.b64encode(image_bytes).decode("utf-8")
-                        except Exception as e:
-                            raise ValidationError(
-                                f"Failed to load input image {src_path}: {e}"
-                            ) from e
+                        base64_data, mime_type = _load_image_as_b64(src_path)
+                        reference_images = [_load_image_as_b64(p) for p in reference_paths]
 
                         thumbnail_images, metadata = selected_service.edit_images(
                             instruction=prompt,
                             base_image_b64=base64_data,
                             mime_type=mime_type,
+                            reference_images=reference_images or None,
                             output_path=output_path,
                             thinking_level=(
                                 ThinkingLevel(thinking_level)
@@ -328,28 +345,7 @@ def register_generate_image_tool(server: FastMCP):
                 # Prepare input images by reading from file paths
                 input_images = None
                 if input_image_paths:
-                    input_images = []
-
-                    for path in input_image_paths:
-                        try:
-                            # Read image file
-                            with open(path, "rb") as f:
-                                image_bytes = f.read()
-
-                            # Detect MIME type
-                            mime_type, _ = mimetypes.guess_type(path)
-                            if not mime_type or not mime_type.startswith("image/"):
-                                mime_type = "image/png"  # Fallback
-
-                            # Convert to base64 for internal API use
-                            base64_data = base64.b64encode(image_bytes).decode("utf-8")
-                            input_images.append((base64_data, mime_type))
-
-                            logger.debug(f"Loaded input image: {path} ({mime_type})")
-
-                        except Exception as e:
-                            raise ValidationError(f"Failed to load input image {path}: {e}") from e
-
+                    input_images = [_load_image_as_b64(path) for path in input_image_paths]
                     logger.info(f"Loaded {len(input_images)} input images from file paths")
 
                 # Generate images following workflows.md pattern:
@@ -621,6 +617,21 @@ def register_generate_image_tool(server: FastMCP):
         except Exception as e:
             logger.error(f"Unexpected error in generate_image: {e}")
             raise
+
+
+def _load_image_as_b64(path: str) -> tuple[str, str]:
+    """Read a local image into (base64, mime_type), defaulting to PNG for unknown types."""
+    try:
+        with open(path, "rb") as f:
+            image_bytes = f.read()
+    except Exception as e:
+        raise ValidationError(f"Failed to load input image {path}: {e}") from e
+
+    mime_type, _ = mimetypes.guess_type(path)
+    if not mime_type or not mime_type.startswith("image/"):
+        mime_type = "image/png"
+
+    return base64.b64encode(image_bytes).decode("utf-8"), mime_type
 
 
 def _get_enhanced_image_service():

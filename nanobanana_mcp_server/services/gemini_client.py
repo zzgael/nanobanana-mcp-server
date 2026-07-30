@@ -15,7 +15,7 @@ from ..config.settings import (
     ProImageConfig,
     ServerConfig,
 )
-from ..core.exceptions import AuthenticationError
+from ..core.exceptions import AuthenticationError, ImageGenerationBlocked
 
 
 class GeminiClient:
@@ -273,13 +273,84 @@ class GeminiClient:
         if not hasattr(first_candidate, "content") or not first_candidate.content:
             return images
 
-        content_parts = getattr(first_candidate.content, "parts", [])
+        # `parts` is a declared field, so it is always *present* — a refused generation sets
+        # it to None. `getattr(..., [])` only covers a missing attribute, hence the `or []`.
+        content_parts = getattr(first_candidate.content, "parts", None) or []
         for part in content_parts:
             inline_data = getattr(part, "inline_data", None)
             if inline_data and hasattr(inline_data, "data") and inline_data.data:
                 images.append(inline_data.data)
 
         return images
+
+    def describe_block(self, response) -> str | None:
+        """Explain why a response carries no image, or None if it does carry one.
+
+        Gemini signals a refusal with HTTP 200 plus an empty candidate, so the reason only
+        lives in `finish_reason` / `prompt_feedback.block_reason`. The returned sentence is
+        read by an LLM: it names the code, gives the usual cause, and rules out an identical
+        retry — without that last part agents replay the same blocked prompt for several turns.
+        """
+        if self.extract_images(response):
+            return None
+
+        code = None
+        detail = None
+
+        prompt_feedback = getattr(response, "prompt_feedback", None)
+        if prompt_feedback is not None:
+            code = self._enum_name(getattr(prompt_feedback, "block_reason", None))
+            detail = getattr(prompt_feedback, "block_reason_message", None)
+
+        candidates = getattr(response, "candidates", None) or []
+        if not code and candidates:
+            first_candidate = candidates[0]
+            code = self._enum_name(getattr(first_candidate, "finish_reason", None))
+            detail = detail or getattr(first_candidate, "finish_message", None)
+            blocked_ratings = [
+                self._enum_name(getattr(rating, "category", None))
+                for rating in (getattr(first_candidate, "safety_ratings", None) or [])
+                if getattr(rating, "blocked", False)
+            ]
+            if blocked_ratings:
+                detail = detail or ", ".join(filter(None, blocked_ratings))
+
+        code = code or "UNKNOWN"
+
+        message = (
+            f"Gemini refused to produce an image (reason: {code}). "
+            "Usual causes: a copyright-protected character or brand, the likeness of a real "
+            "person, or an unsafe subject. Rewrite the prompt with an original description "
+            "instead — retrying the same prompt will be refused again."
+        )
+        if detail:
+            message = f"{message} Gemini said: {detail}"
+        return message
+
+    def extract_images_or_raise(self, response) -> list[bytes]:
+        """`extract_images`, but a refusal raises instead of yielding a silent empty list.
+
+        Every caller treats "no image" as a failure, and previously each one either crashed
+        on the None parts or fell through to a generic "no images were generated" dead end.
+        """
+        images = self.extract_images(response)
+        if images:
+            return images
+
+        reason = self.describe_block(response)
+        self.logger.warning(f"Gemini returned no image: {reason}")
+        raise ImageGenerationBlocked(reason)
+
+    @staticmethod
+    def _enum_name(value) -> str | None:
+        """Render a google.genai enum (or plain string) as its bare name."""
+        if value is None:
+            return None
+        name = getattr(value, "name", None)
+        if name:
+            return str(name)
+        text = str(value)
+        return text.rsplit(".", 1)[-1] if "." in text else text
 
     def upload_file(self, file_path: str, _display_name: str | None = None):
         """Upload file to Gemini Files API.

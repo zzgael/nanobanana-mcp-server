@@ -87,7 +87,7 @@ class ImageService:
                     response = self.gemini_client.generate_content(
                         contents, aspect_ratio=aspect_ratio
                     )
-                    images = self.gemini_client.extract_images(response)
+                    images = self.gemini_client.extract_images_or_raise(response)
 
                     for j, image_bytes in enumerate(images):
                         progress.update(
@@ -219,7 +219,7 @@ class ImageService:
 
                 # Generate edited image
                 response = self.gemini_client.generate_content(contents)
-                image_bytes_list = self.gemini_client.extract_images(response)
+                image_bytes_list = self.gemini_client.extract_images_or_raise(response)
 
                 progress.update(70, "Processing edited image(s)...")
 

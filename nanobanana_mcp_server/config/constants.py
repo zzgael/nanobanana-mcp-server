@@ -9,7 +9,18 @@ ASPECT_RATIOS = ["Square image", "Portrait", "Landscape", "16:9", "4:3"]
 # File processing constants
 THUMBNAIL_SIZE = 256
 TEMP_FILE_SUFFIX = ".tmp"
-MAX_INPUT_IMAGES = 3
+
+# Reference-image caps, per model tier. Gemini 3 (Pro Image and 3.1 Flash Image / NB2) takes
+# up to 14 reference images — the legacy Gemini 2.5 Flash Image path never went past 3.
+# https://ai.google.dev/gemini-api/docs/image-generation
+MAX_INPUT_IMAGES_BY_TIER = {
+    "flash": 3,
+    "nb2": 14,
+    "pro": 14,
+}
+
+# Kept for callers that predate the per-tier caps; equals the highest supported value.
+MAX_INPUT_IMAGES = max(MAX_INPUT_IMAGES_BY_TIER.values())
 
 # Image processing defaults
 DEFAULT_IMAGE_FORMAT = "png"

@@ -135,7 +135,7 @@ class EnhancedImageService:
                     response = self.gemini_client.generate_content(
                         contents, aspect_ratio=aspect_ratio
                     )
-                    images = self.gemini_client.extract_images(response)
+                    images = self.gemini_client.extract_images_or_raise(response)
 
                     for j, image_bytes in enumerate(images):
                         # Calculate overall image index for output_path naming
@@ -210,7 +210,7 @@ class EnhancedImageService:
             response = self.gemini_client.generate_content(contents)
 
             # Step 5: G-->>M: inline edited image
-            edited_images = self.gemini_client.extract_images(response)
+            edited_images = self.gemini_client.extract_images_or_raise(response)
 
             if not edited_images:
                 raise ValueError("No edited images returned from Gemini API")
@@ -290,7 +290,7 @@ class EnhancedImageService:
 
             # Generate edited image
             response = self.gemini_client.generate_content(contents)
-            edited_images = self.gemini_client.extract_images(response)
+            edited_images = self.gemini_client.extract_images_or_raise(response)
 
             if not edited_images:
                 raise ValueError("No edited images returned from Gemini API")

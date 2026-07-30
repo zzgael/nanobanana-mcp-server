@@ -25,6 +25,21 @@ class GeminiAPIError(NanoBananaError):
     pass
 
 
+class ImageGenerationBlocked(ValidationError):
+    """Raised when Gemini refuses to produce an image.
+
+    A refusal is not a server fault and not a transient failure: Gemini answers 200 with a
+    candidate carrying no parts and a ``finish_reason`` such as ``PROHIBITED_CONTENT`` or
+    ``IMAGE_SAFETY``. The message must therefore say *why* and tell the caller not to replay
+    the same prompt, otherwise an agent burns its turns retrying an identical request.
+
+    Subclasses ValidationError so the tool layer treats it as a caller-fixable error rather
+    than an internal crash.
+    """
+
+    pass
+
+
 class ImageProcessingError(NanoBananaError):
     """Raised when image processing fails."""
 

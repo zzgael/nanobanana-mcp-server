@@ -164,7 +164,7 @@ class ProImageService:
                         config=gen_config,
                         aspect_ratio=aspect_ratio,
                     )
-                    images = self.gemini_client.extract_images(response)
+                    images = self.gemini_client.extract_images_or_raise(response)
 
                     for j, image_bytes in enumerate(images):
                         # Pro metadata
@@ -328,6 +328,7 @@ class ProImageService:
         base_image_b64: str | None = None,
         mime_type: str = "image/png",
         file_data_part: dict[str, Any] | None = None,
+        reference_images: list[tuple[str, str]] | None = None,
         output_path: str | None = None,
         thinking_level: ThinkingLevel | None = None,
         media_resolution: MediaResolution | None = None,
@@ -339,6 +340,10 @@ class ProImageService:
         Input can be provided as either:
         - Inline image bytes (base_image_b64 + mime_type)
         - Files API reference (file_data_part = {file_data:{mime_type, uri}})
+
+        `reference_images` carries additional (base64, mime_type) pairs appended after the
+        source image — subjects, characters or styles to bring into the edit while the source
+        keeps defining the scene being modified.
         """
         if thinking_level is None:
             thinking_level = self.config.default_thinking_level
@@ -382,6 +387,16 @@ class ProImageService:
                 )
                 contents = [*image_parts, enhanced_instruction]
 
+            # Additional references ride after the source image, so the model keeps treating
+            # the first one as the scene being edited.
+            if reference_images:
+                ref_b64, ref_mimes = zip(*reference_images, strict=False)
+                reference_parts = self.gemini_client.create_image_parts(
+                    list(ref_b64), list(ref_mimes)
+                )
+                contents = [*contents, *reference_parts]
+                self.logger.info(f"Edit conditioned on {len(reference_images)} reference image(s)")
+
             progress.update(40, "Sending edit request to Gemini API...")
 
             gen_config: dict[str, Any] = {}
@@ -391,7 +406,7 @@ class ProImageService:
                 gen_config["media_resolution"] = media_resolution.value
 
             response = self.gemini_client.generate_content(contents, config=gen_config)
-            image_bytes_list = self.gemini_client.extract_images(response)
+            image_bytes_list = self.gemini_client.extract_images_or_raise(response)
 
             progress.update(70, "Processing edited image(s)...")
 

@@ -14,6 +14,7 @@ Two upstream behaviours these tests pin down:
    generation.
 """
 
+import asyncio
 import os
 
 import pytest
@@ -276,7 +277,8 @@ def _get_generate_image_fn():
 
     server = FastMCP("test")
     register_generate_image_tool(server)
-    tool = list(server._tool_manager._tools.values())[0]
+    tool = asyncio.run(server.get_tool("generate_image"))
+    assert tool is not None
     return tool.fn
 
 

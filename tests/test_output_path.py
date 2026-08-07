@@ -8,6 +8,7 @@ This module tests the output_path feature, including:
 - Edge cases and error handling
 """
 
+import asyncio
 import os
 import pytest
 from pathlib import Path
@@ -252,11 +253,8 @@ class TestOutputPathToolParameter:
         server = FastMCP("test")
         register_generate_image_tool(server)
 
-        # Access the registered tool through FastMCP's internal structure
-        # FastMCP Tool stores parameters as a JSON schema, not a function reference
-        tools = list(server._tool_manager._tools.values())
-        assert len(tools) > 0
-        tool = tools[0]
+        tool = asyncio.run(server.get_tool("generate_image"))
+        assert tool is not None
         properties = tool.parameters.get("properties", {})
         assert "output_path" in properties
 
@@ -268,9 +266,8 @@ class TestOutputPathToolParameter:
         server = FastMCP("test")
         register_generate_image_tool(server)
 
-        tools = list(server._tool_manager._tools.values())
-        assert len(tools) > 0
-        tool = tools[0]
+        tool = asyncio.run(server.get_tool("generate_image"))
+        assert tool is not None
         # In JSON schema, optional params with default None are not in "required"
         required = tool.parameters.get("required", [])
         assert "output_path" not in required

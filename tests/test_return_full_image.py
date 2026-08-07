@@ -8,6 +8,7 @@ This module tests the return_full_image option, including:
 - Replacement logic: full images, fallback to thumbnails, metadata alignment
 """
 
+import asyncio
 import os
 import tempfile
 from unittest.mock import patch
@@ -114,9 +115,8 @@ class TestReturnFullImageToolParameter:
         server = FastMCP("test")
         register_generate_image_tool(server)
 
-        tools = list(server._tool_manager._tools.values())
-        assert len(tools) > 0
-        tool = tools[0]
+        tool = asyncio.run(server.get_tool("generate_image"))
+        assert tool is not None
         properties = tool.parameters.get("properties", {})
         assert "return_full_image" in properties
 
@@ -129,9 +129,8 @@ class TestReturnFullImageToolParameter:
         server = FastMCP("test")
         register_generate_image_tool(server)
 
-        tools = list(server._tool_manager._tools.values())
-        assert len(tools) > 0
-        tool = tools[0]
+        tool = asyncio.run(server.get_tool("generate_image"))
+        assert tool is not None
         required = tool.parameters.get("required", [])
         assert "return_full_image" not in required
 
